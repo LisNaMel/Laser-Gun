@@ -1,295 +1,323 @@
+/mbed
 #include "mbed.h"
-#include <iostream>
+#include "USBHostSerial.h"
+#include "LiquidCrystal_I2C.h"
+//c++ standard
 #include <string>
-#include <ctime>
-#include <bitset>
 
-//basic operater function
-float power(float a, float b)
-{
-  int ans = a;
-  for(int i = 1; i < b; i++)
-    ans *= a;
-  return ans;
+//adress, 20 chars, 4 lines 
+LiquidCrystal_I2C lcd(0x4E, 20, 4);
+
+//hardware A
+DigitalIn sw_time(D11);
+DigitalIn Laser(D10);
+DigitalOut led1(D3), led2(D4), led3(D5), led4(D6);
+AnalogIn sensor1(A1), sensor2(A2), sensor3(A3), sensor4(A4)
+PwmOut buzzer(D9), servo(7);
+Serial slave(D8,D2);
+int connect=0;
+//global variable A
+Timer time_pressing_button;
+Timer time_game;
+Timer time_respawn;
+const char*kill_s =  "Total kill   : ";
+const char*death_s = "Total death  : ";
+const char*bullet_s ="Total bullet : ";
+int kill;
+int death;
+int bullet;
+
+//global variable B
+int  B_time_pressing_button;
+int Bdeath;
+
+void led_on(){
+  led1 = 1;
+  led2 = 1;
+  led3 = 1;
+  led4 = 1;
 }
 
-string bin_to_ascii(string bin);
-string ascii_to_bin(string ascii);
+void led_off(){
+  led1 = 0;
+  led2 = 0;
+  led3 = 0;
+  led4 = 0;
+}
 
-//global hardware variables of A
-DigitalIn AstartButton(D9);
-// DigitalIn Asensor(D10); //(sensor ต่อขนาน 4 ตัว)
-// DigitalIn Aled(D11);
-// DigitalIn Abuzzer(D12);
-// DigitalIn Atrigger(D13);
-// DigitalIn Alcd(D14);
-// DigitalIn Ashoot(D15);
-//global hardware variables of B
-//send data 7 bit per time
-//b state that sent from slave have only 0, 1 during start game 
-//getc() -> recieved ascii -> convert to binary -> save to these variables
-//(1)send_bytes
-//(2)convert variables to binary -> convert to ascii -> change to char -> putc()
-Serial slave(D8, D2);
-string dataB_ascii;
-string dataB_binary;
+void buzzer_death(){
+  buzzer.period(0.5f);
+  buzzer.write(0.5f);
+  wait(3);
+  buzzer.write(0);
+}
 
-//global game variables
-int state = 0;
-clock_t start, stop;
-float convert2sec = power(10,6);
+void buzzer_timeup(){
+  buzzer.period(1.0f);
+  buzzer.write(0.7f);
+  wait(3);
+  buzzer.write(0);
+}
 
-class Player
-{
-public:
-  //game
-  int state = 1;
-  int bullet = 0;
-  int death = 0;
-  clock_t immortal_start, immmortal_stop;
+void servo_lock(){
+  servo.pulsewidth(0.00225);
+}
+
+void servo_unlock(){
+  servo.pulsewidth(0.001);
+}
+
+void show_displayLCD(int totalkill,int totaldeath,int totalbullet,int reset){
+
+  if (totalkill >= 9){
+    totalkill = totalkill + 1;
+    string str = std::to_string(totalkill);
+    const char* ttkill = str.c_str(); 
+    lcd.setCursor(15,1);
+    lcd.print(ttkill);
+  }
+
+  if(totalkill <= 9){
+    totalkill = totalkill + 1;
+    string str = std::to_string(totalkill);
+    const char* ttkill = str.c_str(); 
+    lcd.setCursor(16,1);
+    lcd.print(ttkill);
+  }
+
+
+  if (totaldeath >= 9){
+    totaldeath = totaldeath + 1;
+    string str = std::to_string(totaldeath);
+    const char* ttdeath = str.c_str(); 
+    lcd.setCursor(15,2);
+    lcd.print(ttdeath);
+  }
+
+  if(totaldeath <= 9){
+    totaldeath = totaldeath + 1;
+    string str = std::to_string(totaldeath);
+    const char* ttdeath = str.c_str();  
+    lcd.setCursor(16,2);
+    lcd.print(ttdeath);
+  }
+
+
+  if (totalbullet <= 100 and totalbullet >=11){
+    totalbullet = totalbullet - 1;
+    string str = std::to_string(totalbullet);
+    const char* ttbl = str.c_str(); 
+    lcd.setCursor(16,3);
+    lcd.print(ttbl);
+    lcd.setCursor(15,3);
+    lcd.print("0");
+  }
+  else if (totalbullet <= 10 and totalbullet >=1 ){
+    totalbullet = totalbullet - 1;
+    string str = std::to_string(totalbullet);
+    const char* ttbl = str.c_str(); 
+    lcd.setCursor(17,3);
+    lcd.print(ttbl);
+    lcd.setCursor(15,3);
+    lcd.print("0");
+    lcd.setCursor(16,3);
+    lcd.print("0");
+  }
+  else if (totalbullet <= 1){
+    totalbullet = 0;
+    lcd.setCursor(15,3);
+    lcd.print("000");
+  }
+  else{
+    totalbullet = totalbullet - 1;
+    string str = std::to_string(totalbullet);
+    const char* ttbl = str.c_str(); 
+    lcd.setCursor(15,3);
+    lcd.print(ttbl);
+  }
+
+
+  if(reset == 1){
+    totalkill = 0;
+    totaldeath = 0;
+    totalbullet = 300;
+    lcd.setCursor(15,1);
+    lcd.print("00");
+    lcd.setCursor(15,2);
+    lcd.print("00");
+    lcd.setCursor(15,3);
+    lcd.print("300");
+  }
+}
+
+//state
+//0 wait
+//1 pressing button
+//2 before game start
+//3 start
+//4 death
+//5 end game
+void state0(){
+  kill = 0;
+  death = 0;
+  bullet = 300;
+  lcd.noDisplay();
+  led_off();
+  servo_lock();
+}
+
+void state1(){
+  lcd.noDisplay();
+  led_on();
+  servo_lock();
+}
+
+void state2(){
+  led_off();
+  servo_lock();
+
+  //set up
+  lcd.begin();
+  lcd.backlight();
   
-  //hardward
-  bool startButton = 0;
-  bool sensor = 0;
-  bool led = 0;
-  bool buzzer = 0;
-  bool trigger = 0;
-  bool lcd = 0;
+  //print defualt message
+  lcd.setCursor(0,1);
+  lcd.print(kill_s);      
+  lcd.setCursor(15,1);
+  lcd.print("00");
+  lcd.setCursor(0,2);
+  lcd.print(death_s);
+  lcd.setCursor(15,2);
+  lcd.print("00");
+  lcd.setCursor(0,3);
+  lcd.print(bullet_s);
+  lcd.setCursor(15,3);
+  lcd.print("300");
+}
 
-  //player state
-  //0 death
-  //1 alive
-  void updateState()
+void state3(){
+  requestBdeath();
+  kill = Bdeath;
+  led_on();
+  servo_unlock();
+  show_displayLCD(kill,death,bullet,0);
+}
+
+void state4(){
+  buzzer_death();
+  led_off();
+  server_lock();
+  death += 1;
+  show_displayLCD(kill,death,bullet,0);
+  updateAdeath();
+  time_respawn.start();
+  while(time_respawn.read() < 10){};
+  time_respawn.stop();
+  state = 3;
+}
+
+void state5(){
+  led_off();
+  servo_lock();
+  show_displayLCD(kill, death, bullrt,0);
+  while(sw_time.read()==1){}
+  show_displayLCD(kill,death,bullet,1)
+  state = 0;
+}
+
+void requestBtime(){
+  if(slave.readable()){
+    wait_us(100.0);
+    B_time_pressing_button = slave.getc();
+  }
+}
+
+void requestBdeath(){
+  if(slave.readable()){
+    wait_us(100.0);
+    Bdeath = slave.getc();
+  }
+}
+
+void updateAdeath(){
+  slave.putc(death);
+  wait_us(100.0);
+}
+
+void auto_connect(void const*){
+  USBHostSerial serial;
+
+  while(1){
+    while(!serial.connect())
+      Thread::wait(500);
+  }
+
+  while(1){
+    if (!serial.connected())
+      connect = 0;
+      break;
+    while(serial.available()){
+      connect = 1;
+    }
+    Thread::wait(50);
+  }
+}
+
+void stateUpdate(int state){
+  switch (state)
   {
-    if (state==1 && sensor == 1)
-    {
+  case 0;
+    state0();
+    if(sw_time.read() == 1){
+      state = 1
+    }
+    break;
+  case 1;
+    state1();
+    time_pressing_button.start();
+    while(time.pressing_button.read() < 5 && sw_time.read() == 1){};
+    requestBtime();
+    if (requestBtime == 4){
+      state = 2;
+    }else{
       state = 0;
-      bullet = 0;
-      death += 1;
+    }    
+    break;
+  case 2;
+    state2();
+    time_respawn.start();
+    while(time_respawn.read() < 5){};
+    time_game.start();
+    state = 3;
+    break;
+  case 3;
+    state3();
 
-      startButton = 0;
-      sensor = 0;
-      led = 0;
-      buzzer = 1;
-      trigger = 0;
-      lcd = 1;
-      wait_ms(100);
-      immortal_start = std::clock()/convert2sec;
+    if (sensor1.read() > 0.3 || sensor2.read() > 0.3 || sensor3.read() > 0.3 || sensor4.read() > 0.3){
+      state = 4;
     }
-    else if(state==0)
-    {
-      buzzer = 0;
-      immmortal_stop = std::clock()/convert2sec;
-      if(stop - start > 5)
-      {
-        state = 1;
-        bullet = 300;
 
-        led = 1;
-        trigger = 1;
-        lcd = 1;
-      }
+    if (Laser.read()==1 && bullet!=0){
+      bullet -= 1;
     }
-    else
-    {
-      state = 1;
-    }
-    
-  }
-};
-
-//game state
-//0 wait to start
-//1 press start button
-//2 press start button for 5 sec
-//3 play mode
-//4 End game
-int stateUpdate(int state, Player& a, Player& b)
-{
-  switch(state)
-  {
-    case 0:
-      a.led = 0;
-      a.sensor = 0;
-      a.buzzer = 0;
-      a.trigger = 0;
-      a.lcd = 0;
-
-      b.led = 0;
-      b.sensor = 0;
-      b.buzzer = 0;
-      b.trigger = 0;
-      b.lcd = 0;
-      
-      if (a.startButton == 1 && b.startButton == 1)
-      {
-        start = std::clock()/convert2sec;
-        return 1;
-      }
-      else
-      {
-        return 0;
-      }
-      break;
-    case 1:
-      a.led = 1;
-      b.led = 1;
-      stop = std::clock()/convert2sec;
-      if (a.startButton == 1 && b.startButton == 1)
-      {
-        if(stop - start > 4)
-        {
-          start = std::clock()/convert2sec;
-          return 2;
-        }
-        else
-        {
-          return 1;
-        }
-      }
-      else
-      {
-        return 0;
-      }
-      break;
-    case 2:
-      a.led = 0;
-      a.trigger = 0;
-      a.lcd = 1;
-
-      b.led = 0;
-      b.trigger = 0;
-      b.lcd = 1;
-      
-      stop = std::clock()/convert2sec;
-      if (stop - start > 5)
-      {
-        a.led = 1;
-        a.trigger = 1;
-        a.lcd = 1;
-        
-        b.led = 1;
-        b.trigger = 1;
-        b.lcd = 1;
-        
-        start = std::clock()/convert2sec;
-        return 3;
-      }
-      else
-      {
-        return 2;
-      }
-      break;
-    case 3:
-      stop = std::clock()/convert2sec;
-      if (stop - start > 600)
-      {
-        return 4;
-      }
-      else if (a.startButton == 1 && b.startButton == 1 && stop - start>30)
-      {
-        return 0;
-      }
-      else
-      {
-        a.updateState();
-        b.updateState();
-        return 3;
-      }
-      break;
-    case 4:
-      a.led = 0;
-      a.sensor = 0;
-      a.buzzer = 0;
-      a.trigger = 0;
-      a.lcd = 1;
-
-      b.led = 0;
-      b.sensor = 0;
-      b.buzzer = 0;
-      b.trigger = 0;
-      b.lcd = 1;
-      if (a.startButton == 1 && b.startButton == 1)
-      {
-        return 0;
-      }
-      else
-      {
-        return 4;
-      } 
-      break;      
+    break;
+  case 4;
+    state4();
+    break;
+  case 5;
+    state5();
+    break;
+  default;
+    state = 0;
+    break;
   }
 }
 
-//show LCD
-void updateLCD(Player&a)
-{
-  if(a.lcd==1)
-  {
-    printf("hi");
-  }
-}
-
-int binaryAt(string str,int pos)
-{
-  char char_ans = str.at(pos);
-  int ans = char_ans - 48;
-  return ans;
-}
-
-void requestB(Player& b)
-{
-  if(slave.readable())
-  {
-    dataB_ascii = slave.getc();
-    dataB_binary = ascii_to_bin(dataB_ascii);
-
-    b.state = binaryAt(dataB_binary,0);
-    b.startButton = binaryAt(dataB_binary,1);
-    b.sensor = binaryAt(dataB_binary,2);
-    b.led = binaryAt(dataB_binary,3);
-    b.buzzer = binaryAt(dataB_binary,4);
-    b.trigger = binaryAt(dataB_binary,5);
-    b.lcd = binaryAt(dataB_binary, 6);
-  }
-}
-
-void updateB(Player &b)
-{
-  int ascii = 0;
-  ascii = 2*ascii + b.state;
-  ascii = 2*ascii + b.startButton;
-  ascii = 2*ascii + b.sensor;
-  ascii = 2*ascii + b.led;
-  ascii = 2*ascii + b.buzzer;
-  ascii = 2*ascii + b.trigger;
-  ascii = 2*ascii + b.lcd;
-  char c = ascii;
-  slave.putc(c);
-}
-int main() 
-{
-  Player a;
-  Player b;
-  slave.baud(38400);
-  int shoot = 0;
-  while(1) 
-  {
-    a.startButton = AstartButton.read();
-    // a.sensor = Asensor.read(); 
-    // a.led = Aled.read();
-    // a.buzzer = Abuzzer.read();
-    // a.trigger = Atrigger.read();
-    // a.lcd = Alcd.read();
-    // shoot = Ashoot.read();
-    
-    requestB(b);
-    
-    state = stateUpdate(state,a,b);
-
-    updateB(b);
-
-    //show LCD
-    updateLCD(a);
+int main() {
+  state = 0;
+  Thread serialTask(auto_connect, NULL, osPriorityNormal, 8)
+  while(1) {
+    stateUpdate(state);
+    Thread::wait(500);
   }
 }
